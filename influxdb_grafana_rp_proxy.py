@@ -1,21 +1,51 @@
 """
-Little Grafana Influx proxy
-Author: Paul Kuiper
+Auto Select RetentionPolicy InfluxDB 0.10 proxy for grafana
+Authors: Zollner Robert,
+         Paul Kuiper
+
 Free use
 Requires: gevent, bottle, requests
 """
 
-import gevent # micro threading framework
+import gevent
 from gevent import monkey
+
 monkey.patch_all()
 
 import sys
-import requests # http for humans
-from bottle import get, abort, run, request, response, redirect  # micro web framework for humans (use flask if you like)
-import regex as re # regular expressions libary
+import requests
+from bottle import get, abort, run, request, response, redirect
+import regex as re
 
-signal_set = set()
+rp_db_map = dict()
+
+CONFIG = {
+    'influxdb_http':'http://localhost:8086',
+
+    'bind_host': '0.0.0.0',
+    'bind_port': '3004',
+
+    'retention_policy_map' : {
+        '0.1s': '"default"',
+        '1s' : '"default"',
+        '5s' : '"default"',
+        '10s': '"10sec"',
+        '30s': '"30sec"',
+        '1m' : '"1min"',
+        '5m' : '"5min"',
+        '10m': '"30min"',
+        '30m': '"30min"',
+        '1h' : '"1hour"',
+        '3h' : '"3hour"',
+        '12h': '"12hour"',
+        '1d' : '"24hour"',
+        '7d' : '"24hour"',
+        '30d': '"24hour"'
+    }
+}
+
 pattern = re.compile(r"""
+
     ^                   # beginning of string
     select\b            # must start with select statement (followed by word boundary)
     \s+                 # 1 or more whitespaces
@@ -24,93 +54,125 @@ pattern = re.compile(r"""
     (.*)                # the field name                                                group 1 (field name)
     \)                  # closing bracket
     \s+                 # 1 or more whitespaces
-
     \bfrom\b            # the from statement should follow (with word boundaries)
     \s+                 # 1 or more whitespaces
     (.*)                # the from content                                              group 2  (measurement)
     \s+                 # 1 or more whitespaces
-
     \bwhere\b           # the where statement is always present in a grafana query
     (.*)                # the where content                                             group 3  (where clause)
-
     \bgroup\sby\b       # match group by statement
     \s+                 # 1 or more whitespaces
     time\(              # time with opening bracket
     (\d+)               # minimal 1 digit (does not match 0.1s!)                        group 4  (number of time units)
     ([s|m|h|d|w])       # the group by unit                                             group 5  (time unit)
     \)                  # closing bracket
-    \s+                 # 1 or more whitespaces
-
-    \border\sasc        # ordering is always present in a grafana query
+    .*                  # rest of the request - don't care
     $                   # end of string
     """,  re.VERBOSE | re.I)
 
-@get('/<path:path>') # pass through all other queries
+
+@get('/<path:path>')
 def proxy_influx_query(path):
     """
     Capture the query events comming from Grafana.
-    Investegate the query and replace the measurement name with a continuous query measurement name if possible.
+    Investigate the query and replace the measurement name with a Retention Policy measurement name if possible.
     Send out the (modified or unmodified) query to Influx and return the result
     """
 
-    forward_url = r'http://localhost:8086'  # The local influx host
+    forward_url = CONFIG['influxdb_http']  # The local influx host
 
     params = dict(request.query) # get all query parameters
-    try:
-        params['q'] = modify_query(params['q'], signal_set)
-    except Exception as e:
-        pass
 
+    try:
+        params['q'] = modify_query(params, rp_db_map)
+
+    except Exception as e:
+        print "EXC:", e
+        pass
     headers = request.headers
     cookies = request.cookies
-    r = requests.get(url=forward_url + path, params=params, headers=headers, cookies=cookies, stream=True) # get data from influx
+    r = requests.get(url=forward_url +'/'+ path, params=params, headers=headers, cookies=cookies, stream=True) # get data from influx
+
     if r.status_code == 200:
         for key, value in dict(r.headers).iteritems():
              response.set_header(key, value)
+
         for key, value in dict(r.cookies).iteritems():
             response.cookies[key] = value
         pass
     else:
         abort(r.status_code, r.reason) # NOK, return error
+
     return r.raw
 
 
-def modify_query(qry, signal_set):
+def modify_query(req, rp_db_map):
+
     """
     Grafana will zoom out with the following group by times:
-
     0.1s, 1s, 5s, 10s, 30s, 1m, 5m, 10m, 30m, 1h, 3h, 12h, 1d, 7d, 30d, 1y
-
-    :param qry: the query to analyse and modify if needed
-    :return: the modified query
     """
 
+    qry = req['q']
+    qry_db = req['db']
+
     try:
+
+        # print qry
         items = pattern.search(qry).groups() # get the content of the different query parts
-        table = items[2].strip("'").strip('"')
-        measurement = '.'.join((table,'1'+items[5], items[0])) # construct agg. measurement name e.g.: metric.1h.max
-        if measurement not in signal_set: # not a known signal (continuous query)
+
+        q_gtime = ''.join((items[4],items[5]))
+        if q_gtime not in CONFIG['retention_policy_map']:
             return qry
-        field_name = items[0] + '(' + items[1] + ')'
-        group_by = 'time(' + str(items[4]) + items[5] + ')'
-        qry = ' '.join(('select',field_name,'from','"'+ measurement + '"','where',items[3],'group by',group_by,'order asc'))
+            
+        q_table = items[2]
+        if '.' in q_table:
+            q_rp,_,q_table = items[2].rpartition('.')
+            if q_rp in CONFIG['retention_policy_map'].values():
+                print 'specific RP requested, ignoring detection: ',q_rp,'-', q_table
+                return qry
+                
+            print q_gtime, q_rp,'-', q_table
+            
+        new_rp = CONFIG['retention_policy_map'][q_gtime]
+        
+        measurement = '.'.join((new_rp, q_table))
+        new_qry = qry.replace(items[2], measurement)
+        
+        # Download list of RP for current Influxdb database
+        if qry_db not in rp_db_map:
+            influx_update_rp( rp_db_map, qry_db, '','');
+        
+        # Check if auto-calc RP is defined in InfluxDB database
+        if new_rp.strip("\"") not in rp_db_map[qry_db]:
+            print "[E]: RP [%s] in not defined in Influx database [%s]. skipping.." % (new_rp, qry_db), rp_db_map[qry_db]
+            return qry
+            
+        # print 'old :[', items[2], '] new:[',measurement, "] qry:", new_qry
+        return new_qry
+        
     except Exception as e:
         print e
         pass
+        
     return qry
 
-def get_signals(signal_set):
-    params = {  'q' : 'list series',        # get all signals
-                'p' : 'GrafanaPassword1!',
-                'u' : 'Grafana'}
-    while True:
-        r = requests.get(r'http://euv-dashboard.eu.asml.com/data//db/db/series', params=params)
-        r = r.json()[0]['points']           # convert the json to an object and get the data points
-        signal_set =  {sig[1] for sig in r}  # create a set with the signal names only
-        gevent.sleep(3600)                  # refresh signal list every hour
 
+def influx_update_rp(rp_map, r_db, r_user, r_pass):
+    
+    params = {  'q' : 'SHOW RETENTION POLICIES ON %s' % r_db,
+                'db' : r_db}
+
+    r = requests.get(CONFIG['influxdb_http'] + '/query', params=params)
+    try:
+        rp_list = { rp[0] for rp in r.json()['results'][0]['series'][0]['values'] }
+        rp_map[r_db] = rp_list
+        
+    except Exception as e:
+        print e
+        pass
+        
 if __name__ == '__main__':
-    print >> sys.stderr, "Starting signal list updates"
-    gevent.spawn(get_signals, signal_set) # start the signal list refresh service
+
     print >> sys.stderr, "Starting proxy server"
-    run(host='0.0.0.0', port=3004, server='gevent') # start the proxy webserver (choose your own port)
+    run(host=CONFIG['bind_host'], port=CONFIG['bind_port'], server='gevent')
