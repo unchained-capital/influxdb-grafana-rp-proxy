@@ -127,7 +127,7 @@ def modify_query(req, rp_db_map):
             
         q_table = items[2]
         if '.' in q_table:
-            q_rp,_,q_table = items[2].rpartition('.')
+            q_rp,_,q_table = items[2].partition('.')
             if q_rp in CONFIG['retention_policy_map'].values():
                 print 'specific RP requested, ignoring detection: ',q_rp,'-', q_table
                 return qry
