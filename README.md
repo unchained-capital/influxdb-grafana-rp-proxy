@@ -2,8 +2,10 @@
 Auto select infuxdb 0.10 Retention Policy
 
 Until influxdb fixes this and enables downsampling of data internally this workaround will do.
-- works only wirh Influx Auth disabled
+- works only with Influx Auth disabled
 - have only tested it with tag based measurements (dotted series names need to be fixed)
+
+Original code: @PaulKuiper https://github.com/influxdata/influxdb/issues/2625#issuecomment-161716174
 
 Ubuntu 14.04 setup:
 ```
