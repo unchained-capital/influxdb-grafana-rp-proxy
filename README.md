@@ -3,7 +3,9 @@ Auto select infuxdb 0.10 Retention Policy
 
 Until influxdb fixes this and enables downsampling of data internally this workaround will do.
 - works only with Influx Auth disabled
-- have only tested it with tag based measurements (dotted series names need to be fixed)
+- have only tested it with tag based measurements (~~dotted series names need to be fixed~~)
+- selection of RP depends on "group by time()" of the query.
+- First part of a dotted series name should *NOT* be the same as existing RP name( Not OK: Series="5min.hosts.cpu" RP="5min")
 
 Original code: @PaulKuiper https://github.com/influxdata/influxdb/issues/2625#issuecomment-161716174
 
@@ -40,7 +42,7 @@ CREATE CONTINUOUS QUERY graphite_cq_3hour  ON graphite BEGIN SELECT mean(value) 
 CREATE CONTINUOUS QUERY graphite_cq_12hour ON graphite BEGIN SELECT mean(value) as value INTO graphite."12hour".:MEASUREMENT FROM graphite."1hour"./.*/ GROUP BY time(12h), * END
 CREATE CONTINUOUS QUERY graphite_cq_24hour ON graphite BEGIN SELECT mean(value) as value INTO graphite."24hour".:MEASUREMENT FROM graphite."1hour"./.*/ GROUP BY time(24h), * END
 ```
-3) Backfill historical data XX days.
+3) Backfill historical data XX days.(only if needed)
 ```
 SELECT mean(value) as value INTO graphite."10sec".:MEASUREMENT FROM graphite."default"./.*/ WHERE time > now() - XXd GROUP BY time(10s),*
 SELECT mean(value) as value INTO graphite."30sec".:MEASUREMENT FROM graphite."default"./.*/ WHERE time > now() - XXd GROUP BY time(30s),*
