@@ -131,6 +131,10 @@ def modify_query(req, rp_db_map):
             if q_rp in CONFIG['retention_policy_map'].values():
                 print 'specific RP requested, ignoring detection: ',q_rp,'-', q_table
                 return qry
+            else:
+                # This is a dotted series name
+                q_table = items[2]
+         
                 
             print q_gtime, q_rp,'-', q_table
             
