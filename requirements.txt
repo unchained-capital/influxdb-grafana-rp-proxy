@@ -1,0 +1,4 @@
+gevent==1.1.1
+requests==2.10.0
+bottle==0.12.9
+regex==2016.06.24

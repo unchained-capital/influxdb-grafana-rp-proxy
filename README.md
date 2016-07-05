@@ -1,23 +1,74 @@
 # influxdb-grafana-rp-proxy
-Auto select infuxdb 0.10 Retention Policy
 
-Until influxdb fixes this and enables downsampling of data internally this workaround will do.
-- works only with Influx Auth disabled
-- have only tested it with tag based measurements (~~dotted series names need to be fixed~~)
-- selection of RP depends on "group by time()" of the query.
-- First part of a dotted series name should *NOT* be the same as existing RP name( Not OK: Series="5min.hosts.cpu" RP="5min")
+Proxy inserted between Grafana and InfluxDB which auto-selects an
+InfuxDB Retention Policy based on the size of the `GROUP BY` window
+specified in queries from Grafana.
+
+Until InfluxDB either
+
+a) intelligently merges data points from different retention policies
+at query time (perhaps through layers for RPs?)
+
+b) implements downsampling internally
+
+a proxy such as this one will be required to effectively use Grafana
+(and possibly many other tools) with an InfluxDB containing
+downsampled data.  Watch the
+[GitHub issue](https://github.com/influxdata/influxdb/issues/5750) for
+progress.
+
+This proxy:
+
+- works only with InfluxDB auth disabled.
+- has only been tested with tag based measurements (~~dotted series names need to be fixed~~).
+- assumes series names and tags are consistent across retention policies.
+- assumes first part of a dotted series name is *NOT* be the same as some existing retention policy name (Not OK: series="5min.hosts.cpu" RP="5min")
 
 Original code: @PaulKuiper https://github.com/influxdata/influxdb/issues/2625#issuecomment-161716174
 
+## Installation
+
 Ubuntu 14.04 setup:
+
 ```
-apt install python-regex python-bottle python-requests python-gevent
+$ sudo apt-get install python-regex python-bottle python-requests python-gevent
 ```
 
+Or use [`pip`](https://docs.python.org/3.6/installing/index.html) one
+you've cloned this repo:
 
-Prepare influxdb Database:
+```
+$ sudo pip install -r requirements.txt
+```
 
-1) Create Retencion Policy for every database.
+## Configuration
+
+The [default configuration file](default.yml) is simple and thoroughly
+documented.  Modify it as you need.
+
+## Usage
+
+Launch the proxy with default settings:
+
+```
+$ python proxy.py
+```
+
+Or pass in a configuration file:
+
+```
+$ python proxy.py config.yml
+```
+
+Now configure Grafana to use an "InfluxDB server" at the host and port
+of the proxy, instead of the actual InfluxDB server.
+
+## Database Preparation
+
+The following is just an example, written to match the
+[default configuration](default.yml).
+
+1) Create Retention Policy for every database.
 ```
 ALTER RETENTION POLICY "default" ON "graphite" DURATION 12h REPLICATION 1 DEFAULT
 CREATE RETENTION POLICY "10sec"  ON graphite DURATION 2h   REPLICATION 1
@@ -53,16 +104,4 @@ SELECT mean(value) as value INTO graphite."1hour".:MEASUREMENT FROM graphite."5m
 SELECT mean(value) as value INTO graphite."3hour".:MEASUREMENT FROM graphite."5min"./.*/    WHERE time > now() - XXd GROUP BY time(3h),*
 SELECT mean(value) as value INTO graphite."12hour".:MEASUREMENT FROM graphite."1hour"./.*/  WHERE time > now() - XXd GROUP BY time(12h),*
 SELECT mean(value) as value INTO graphite."24hour".:MEASUREMENT FROM graphite."1hour"./.*/  WHERE time > now() - XXd GROUP BY time(24h),*
-```
-
-4) Edit config settings, and point Grafana DataSources to host:port defined here  
-```
-CONFIG = {
-    'influxdb_http':'http://localhost:8086',
-
-    'bind_host': '0.0.0.0',
-    'bind_port': '3004',
-
-    ..
-}
 ```
