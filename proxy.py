@@ -105,9 +105,13 @@ def modify_queries(req):
     0.1s, 1s, 5s, 10s, 30s, 1m, 5m, 10m, 30m, 1h, 3h, 12h, 1d, 7d, 30d, 1y
     """
 
-    query_string = req['q']
+    query_string = req.get('q')
+    if query_string is None:
+        return None
     try:
-        database = req['db']
+        database = req.get('db')
+        if database is None:
+            return query_string
         if database not in RPS_BY_DATABASE:
             update_rp_cache(database)
         return "\n".join([modify_query(database, line) for line in query_string.split("\n")])
