@@ -90,11 +90,12 @@ def proxy_influx_query(path):
     cookies = request.cookies
     r = requests.get(url=CONFIG['influxdb_url'] +'/'+ path, params=params, headers=headers, cookies=cookies, stream=True)
     for key, value in dict(r.headers).iteritems():
+        if key == 'Content-Length': continue
         response.set_header(key, value)
     for key, value in dict(r.cookies).iteritems():
         response.cookies[key] = value
     if r.status_code == 200:
-        return r.raw
+        return r.text
     else:
         abort(r.status_code, r.reason)
 
