@@ -92,6 +92,8 @@ def proxy_influx_query(path):
     for key, value in dict(r.headers).iteritems():
         if key == 'Content-Length':
             response.set_header('Content-Length', len(r.text)) # FIXME
+        elif key == 'Content-Encoding':
+            continue
         else:
             response.set_header(key, value)
     for key, value in dict(r.cookies).iteritems():
