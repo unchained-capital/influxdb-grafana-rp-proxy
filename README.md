@@ -1,7 +1,7 @@
-# influxdb-grafana-rp-proxy
+# InfluxDB Grafana Retention Policy Proxy
 
 Proxy inserted between Grafana and InfluxDB which auto-selects an
-InfuxDB Retention Policy based on the size of the `GROUP BY` window
+InfuxDB retention policy based on the size of the `GROUP BY` interval
 specified in queries from Grafana.
 
 Until InfluxDB either
@@ -12,17 +12,16 @@ at query time (perhaps through layers for RPs?)
 b) implements downsampling internally
 
 a proxy such as this one will be required to effectively use Grafana
-(and possibly many other tools) with an InfluxDB containing
-downsampled data.  Watch the
-[GitHub issue](https://github.com/influxdata/influxdb/issues/5750) for
-progress.
+ with an InfluxDB containing downsampled data.  Watch the
+ [GitHub issue](https://github.com/influxdata/influxdb/issues/5750)
+ for progress.
 
-This proxy:
+This proxy
 
-- works only with InfluxDB auth disabled.
-- has only been tested with tag based measurements (~~dotted series names need to be fixed~~).
-- assumes series names and tags are consistent across retention policies.
-- assumes first part of a dotted series name is *NOT* be the same as some existing retention policy name (Not OK: series="5min.hosts.cpu" RP="5min")
+- assumes series names and tags are identical across retention
+  policies.
+- assumes database and retention policies do not have periods ('.') in
+  their names (it's OK if series do).
 
 Original code: @PaulKuiper https://github.com/influxdata/influxdb/issues/2625#issuecomment-161716174
 
@@ -31,7 +30,7 @@ Original code: @PaulKuiper https://github.com/influxdata/influxdb/issues/2625#is
 Ubuntu 14.04 setup:
 
 ```
-$ sudo apt-get install python-regex python-bottle python-requests python-gevent
+$ sudo apt-get install python-regex python-requests mitmproxy
 ```
 
 Or use [`pip`](https://docs.python.org/3.6/installing/index.html) one
@@ -43,25 +42,20 @@ $ sudo pip install -r requirements.txt
 
 ## Configuration
 
-The [default configuration file](default.yml) is simple and thoroughly
+The [default configuration file](default.yml) is simple and
 documented.  Modify it as you need.
 
 ## Usage
 
-Launch the proxy with default settings:
+This proxy is intended to be run as a script for the `mitmdump` tool.
 
 ```
-$ python proxy.py
+$ mitmdump --reverse "http:/localhost:8086" --port 3004 --script 'proxy.py default.yml'
 ```
 
-Or pass in a configuration file:
-
-```
-$ python proxy.py config.yml
-```
-
-Now configure Grafana to use an "InfluxDB server" at the host and port
-of the proxy, instead of the actual InfluxDB server.
+Now configure Grafana to use an "InfluxDB server" at `localhost:3004`,
+instead of the actual InfluxDB server (`localhost:8086` in this
+example).
 
 ## Database Preparation
 
@@ -70,38 +64,20 @@ The following is just an example, written to match the
 
 1) Create Retention Policy for every database.
 ```
-ALTER RETENTION POLICY "default" ON "graphite" DURATION 12h REPLICATION 1 DEFAULT
-CREATE RETENTION POLICY "10sec"  ON graphite DURATION 2h   REPLICATION 1
-CREATE RETENTION POLICY "30sec"  ON graphite DURATION 6h   REPLICATION 1
-CREATE RETENTION POLICY "1min"   ON graphite DURATION 24h  REPLICATION 1
-CREATE RETENTION POLICY "5min"   ON graphite DURATION 48h  REPLICATION 1
-CREATE RETENTION POLICY "30min"  ON graphite DURATION 7d   REPLICATION 1
-CREATE RETENTION POLICY "1hour"  ON graphite DURATION 31d  REPLICATION 1
-CREATE RETENTION POLICY "3hour"  ON graphite DURATION 93d  REPLICATION 1
-CREATE RETENTION POLICY "12hour" ON graphite DURATION 370d REPLICATION 1
-CREATE RETENTION POLICY "24hour" ON graphite DURATION inf  REPLICATION 1
+ALTER RETENTION POLICY "default" ON "graphite" DURATION 1h REPLICATION 1 DEFAULT
+CREATE RETENTION POLICY "one_week"  ON graphite DURATION 7d  REPLICATION 1
+CREATE RETENTION POLICY "one_month" ON graphite DURATION 30d REPLICATION 1
+CREATE RETENTION POLICY "forever"   ON graphite DURATION INF REPLICATION 1
 ```
 2) Create Continuous Queries
 ```
-CREATE CONTINUOUS QUERY graphite_cq_10sec  ON graphite BEGIN SELECT mean(value) as value INTO graphite."10sec".:MEASUREMENT  FROM graphite."default"./.*/ GROUP BY time(10s), * END
-CREATE CONTINUOUS QUERY graphite_cq_30sec  ON graphite BEGIN SELECT mean(value) as value INTO graphite."30sec".:MEASUREMENT  FROM graphite."default"./.*/ GROUP BY time(30s), * END
-CREATE CONTINUOUS QUERY graphite_cq_1min   ON graphite BEGIN SELECT mean(value) as value INTO graphite."1min".:MEASUREMENT   FROM graphite."10sec"./.*/ GROUP BY time(1m), * END
-CREATE CONTINUOUS QUERY graphite_cq_5min   ON graphite BEGIN SELECT mean(value) as value INTO graphite."5min".:MEASUREMENT   FROM graphite."30sec"./.*/ GROUP BY time(5m), * END
-CREATE CONTINUOUS QUERY graphite_cq_30min  ON graphite BEGIN SELECT mean(value) as value INTO graphite."30min".:MEASUREMENT  FROM graphite."5min"./.*/ GROUP BY time(30m), * END
-CREATE CONTINUOUS QUERY graphite_cq_1hour  ON graphite BEGIN SELECT mean(value) as value INTO graphite."1hour".:MEASUREMENT  FROM graphite."5min"./.*/ GROUP BY time(1h), * END
-CREATE CONTINUOUS QUERY graphite_cq_3hour  ON graphite BEGIN SELECT mean(value) as value INTO graphite."3hour".:MEASUREMENT  FROM graphite."5min"./.*/ GROUP BY time(3h), * END
-CREATE CONTINUOUS QUERY graphite_cq_12hour ON graphite BEGIN SELECT mean(value) as value INTO graphite."12hour".:MEASUREMENT FROM graphite."1hour"./.*/ GROUP BY time(12h), * END
-CREATE CONTINUOUS QUERY graphite_cq_24hour ON graphite BEGIN SELECT mean(value) as value INTO graphite."24hour".:MEASUREMENT FROM graphite."1hour"./.*/ GROUP BY time(24h), * END
+CREATE CONTINUOUS QUERY graphite_default_to_one_week   ON graphite BEGIN SELECT mean(value) as value INTO graphite."one_week".:MEASUREMENT  FROM graphite."default"./.*/   GROUP BY time(10m), * END
+CREATE CONTINUOUS QUERY graphite_one_week_to_one_month ON graphite BEGIN SELECT mean(value) as value INTO graphite."one_month".:MEASUREMENT FROM graphite."one_week"./.*/  GROUP BY time(1h),  * END
+CREATE CONTINUOUS QUERY graphite_one_month_to_forever  ON graphite BEGIN SELECT mean(value) as value INTO graphite."forever".:MEASUREMENT   FROM graphite."one_month"./.*/ GROUP BY time(6h),  * END
 ```
 3) Backfill historical data XX days.(only if needed)
 ```
-SELECT mean(value) as value INTO graphite."10sec".:MEASUREMENT FROM graphite."default"./.*/ WHERE time > now() - XXd GROUP BY time(10s),*
-SELECT mean(value) as value INTO graphite."30sec".:MEASUREMENT FROM graphite."default"./.*/ WHERE time > now() - XXd GROUP BY time(30s),*
-SELECT mean(value) as value INTO graphite."1min".:MEASUREMENT FROM graphite."10sec"./.*/    WHERE time > now() - XXd GROUP BY time(1m),*
-SELECT mean(value) as value INTO graphite."5min".:MEASUREMENT FROM graphite."30sec"./.*/    WHERE time > now() - XXd GROUP BY time(5m),*
-SELECT mean(value) as value INTO graphite."30min".:MEASUREMENT FROM graphite."5min"./.*/    WHERE time > now() - XXd GROUP BY time(30m),*
-SELECT mean(value) as value INTO graphite."1hour".:MEASUREMENT FROM graphite."5min"./.*/    WHERE time > now() - XXd GROUP BY time(1h),*
-SELECT mean(value) as value INTO graphite."3hour".:MEASUREMENT FROM graphite."5min"./.*/    WHERE time > now() - XXd GROUP BY time(3h),*
-SELECT mean(value) as value INTO graphite."12hour".:MEASUREMENT FROM graphite."1hour"./.*/  WHERE time > now() - XXd GROUP BY time(12h),*
-SELECT mean(value) as value INTO graphite."24hour".:MEASUREMENT FROM graphite."1hour"./.*/  WHERE time > now() - XXd GROUP BY time(24h),*
+SELECT mean(value) as value INTO graphite."one_week".:MEASUREMENT  FROM graphite."default"./.*/  WHERE time > now() - ? GROUP BY time(10m)*
+SELECT mean(value) as value INTO graphite."one_month".:MEASUREMENT FROM graphite."one_week"./.*/ WHERE time > now() - ? GROUP BY time(1h)*
+SELECT mean(value) as value INTO graphite."forever".:MEASUREMENT FROM graphite."one_month"./.*/ WHERE time > now() - ? GROUP BY time(6h)*
 ```

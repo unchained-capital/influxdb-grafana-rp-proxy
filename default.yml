@@ -1,61 +1,35 @@
 ---
 
-verbose: true
-
-# The URL of the InfluxDB server.
+# The mitmdump program handles most backend requests to InfluxDB but
+# our proxy code needs to make requests directly so it can cache the
+# set of retention polices for each database.
+#
+# FIXME This same information is held by mitmdump somewhere, since we
+# pass it on the command-line, but I don't know how to access it from
+# within the proxy script...
 influxdb_url: "http://localhost:8086"
 
-# The address and port this proxy should bind to.
-bind:
-  address: 0.0.0.0
-  port:    3004
-
-# Per-database mappings from GROUP BY time $interval to retention
-# policies.
+# Per-database configurations mapping the 'GROUP BY $interval'
+# requested by Grafana to an appropriate InfluxDB retention policy.
 #
 # Top level entries are InfluxDB database names with corresponding
 # mappings.  The _default_ entry will be used for queries with a
 # database not explicitly named.
 #
-# Second-level entries are be the fixed set of GROUP BY time $interval
-# values used by Grafana with corresponding InfluxDB retention policy
-# names to which inbound queries should be mapped.
-#
-# All 15 possible $interval values used by Grafana should be present
-# in a given mapping.
-rps_by_interval:
-  # Example below replicates the default behavior of Grafana.
+# Second-level entries are a list of 2-element lists.  These sublists
+# define the a bound and the name of an InfluxDB retention policy.  If
+# the 'GROUP BY $interval' requested is larger than the bound, the
+# corresponding InfluxDB retention policy will be used.  To ensure the
+# smallest such bound is selected, order the list by bound, as in the
+# second example below.
+rps_by_limit:
+  # Example below should remain as the default.
   _default_:
-    0.1s: default
-    1s:   default
-    5s:   default
-    10s:  default
-    30s:  default
-    1m:   default
-    5m:   default
-    10m:  default
-    30m:  default
-    1h:   default
-    3h:   default
-    12h:  default
-    1d:   default
-    7d:   default
-    30d:  default
+    - [0, "default"]
   # Example below is more complete:
-  # 
-  # _default_:
-  #   0.1s: default
-  #   1s:   default
-  #   5s:   default
-  #   10s:  10sec
-  #   30s:  30sec
-  #   1m:   1min
-  #   5m:   5min
-  #   10m:  30min
-  #   30m:  30min
-  #   1h:   1hour
-  #   3h:   3hour
-  #   12h:  12hour
-  #   1d:   24hour
-  #   7d:   24hour
-  #   30d:  24hour
+  # my_database:
+  #   - [0,     "default"]
+  #   - [60,    "1min"]
+  #   - [1800,  "5min"]
+  #   - [10800, "1hour"]
+  #   - [86400, "1day"]

@@ -1,51 +1,37 @@
-"""
-Auto Select RetentionPolicy InfluxDB 0.10 proxy for grafana
-Authors: Zollner Robert,
-         Paul Kuiper,
-         Dhruv Bansal
-
-Free use
-"""
-
-import gevent
-from gevent import monkey
-
-monkey.patch_all()
-
 import sys
 import yaml
-import logging
+import regex
+
 import requests
-from bottle import get, abort, run, request, response, redirect
-import regex as re
+import mitmproxy
 
 RPS_BY_DATABASE = dict()
 
-INFLUXDB_GROUP_BY_QUERY_PATTERN = re.compile(r"""
+INFLUXDB_GROUP_BY_QUERY_PATTERN = regex.compile(r"""
 
-    ^                   # beginning of string
-    select\b            # must start with select statement (followed by word boundary)
-    \s+                 # 1 or more whitespaces
+    ^                                     # beginning of string
+    select\b                              # must start with select statement (followed by word boundary)
+    \s+                                   # 1 or more whitespaces
     (?:count|min|max|mean|sum|first|last) # an aggragate function
-    \(                  # time with opening bracket
-    .*                  # the field name
-    \)                  # closing bracket
-    \s+                 # 1 or more whitespaces
-    \bfrom\b            # the from statement should follow (with word boundaries)
-    \s+                 # 1 or more whitespaces
-    (.*)                # the from content                                              group 1  (measurement)
-    \s+                 # 1 or more whitespaces
-    \bwhere\b           # the where statement is always present in a grafana query
-    .*                  # the where content
-    \bgroup\sby\b       # match group by statement
-    \s+                 # 1 or more whitespaces
-    time\(              # time with opening bracket
-    ([\.\d]+)           # minimal 1 digit                                               group 2  (number of time units)
-    ([s|m|h|d|w])       # the group by unit                                             group 3  (time unit)
-    \)                  # closing bracket
-    .*                  # rest of the request - don't care
-    $                   # end of string
-    """,  re.VERBOSE | re.I)
+    \(                                    # time with opening bracket
+    .*                                    # the field name
+    \)                                    # closing bracket
+    \s+                                   # 1 or more whitespaces
+    \bfrom\b                              # the from statement should follow (with word boundaries)
+    \s+                                   # 1 or more whitespaces
+    (.*)                                  # the from content                                              group 1  (measurement)
+    \s+                                   # 1 or more whitespaces
+    \bwhere\b                             # the where statement is always present in a grafana query
+    .*                                    # the where content
+    \bgroup\sby\b                         # match group by statement
+    \s+                                   # 1 or more whitespaces
+    time\(                                # time with opening bracket
+    ([\.\d]+)                             # the magnitude                                                 group 2  (interval magnitude)
+    ([s|m|h|d|w|y])                       # the unit                                                      group 3  (interval unit)
+    \)                                    # closing bracket
+    .*                                    # rest of the request - don't care
+    $                                     # end of string
+    """,  regex.VERBOSE | regex.I)
 
 CONFIG = dict()
 
@@ -54,132 +40,121 @@ def load_config(path):
 
 load_config('default.yml')
 
-LOGGER = None
-
-def build_logger():
-    l = logging.getLogger('influxdb-grafana-rp-proxy')
-    h = logging.StreamHandler()
-    if CONFIG.get('verbose', False):
-        l.setLevel(logging.DEBUG)
-        h.setLevel(logging.DEBUG)
-    else:
-        l.setLevel(logging.INFO)
-        h.setLevel(logging.INFO)
-    f = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-    h.setFormatter(f)
-    l.addHandler(h)
-    return l
-    
-@get('/<path:path>')
-def proxy_influx_query(path):
-    """
-    Capture the query events comming from Grafana.
-    Investigate the query and replace the measurement name with a Retention Policy measurement name if possible.
-    Send out the (modified or unmodified) query to Influx and return the result
-    """
-    params = dict(request.query)
-    
-    try:
-        LOGGER.debug(params.get('q', None))
-        params['q'] = modify_queries(params)
-        LOGGER.debug(params.get('q', None))
-    except Exception as e:
-        LOGGER.exception("Error (%s) proxying query: %s", type(e).__class__, e.message, exc_info=True)
-        pass
-    headers = request.headers
-    cookies = request.cookies
-    r = requests.get(url=CONFIG['influxdb_url'] +'/'+ path, params=params, headers=headers, cookies=cookies, stream=True)
-    for key, value in dict(r.headers).iteritems():
-        if key == 'Content-Length':
-            response.set_header('Content-Length', len(r.text)) # FIXME
-        elif key == 'Content-Encoding':
-            continue
-        else:
-            response.set_header(key, value)
-    for key, value in dict(r.cookies).iteritems():
-        response.cookies[key] = value
-        
-    response.status = r.status_code
-    return r.text
-    
-def modify_queries(req):
-
+def modify_queries(ctx, queries, databases):
     """
     Grafana will zoom out with the following group by times:
     0.1s, 1s, 5s, 10s, 30s, 1m, 5m, 10m, 30m, 1h, 3h, 12h, 1d, 7d, 30d, 1y
     """
-
-    query_string = req.get('q')
-    if query_string is None:
-        return None
     try:
-        database = req.get('db')
-        if database is None:
-            return query_string
+        database = databases[0]
         if database not in RPS_BY_DATABASE:
-            update_rp_cache(database)
-        return "\n".join([modify_query(database, line) for line in query_string.split("\n")])
+            update_rp_cache(ctx, database)
+        return [modify_query(ctx, query, database) for query in queries]
     except Exception as e:
-        LOGGER.exception("Error (%s) modifying query: %s", type(e).__class__, e.message, exc_info=True)
-        return query_string
+        ctx.log("ERROR Could not modify queries ({}): {}".format(type(e).__name__, e.message))
+        return queries
 
-def modify_query(database, query):
+def modify_query(ctx, query, database):
     match = INFLUXDB_GROUP_BY_QUERY_PATTERN.search(query)
     if match is None:
-        LOGGER.debug("Cannot parse query")
         return query
-    original_measurement, interval_magnitude, interval_units = match.groups()
+    # ctx.log("DEBUG Considering '{}'".format(query))
+    original_measurement, interval_magnitude, interval_unit = match.groups()
 
-    interval = ''.join((interval_magnitude,interval_units))
-    if database in CONFIG['rps_by_interval']:
-        rps_by_interval = CONFIG['rps_by_interval'][database]
-    else:
-        if '_default_' in CONFIG['rps_by_interval']:
-            rps_by_interval = CONFIG['rps_by_interval']['_default_']
-        else:
-            LOGGER.debug("No _default_ interval to retention policy mapping was configured!")
-            return query
-    if interval not in rps_by_interval:
-        LOGGER.debug("Unknown interval [%s] for database [%s]", interval, database)
+    if explicit_retention_policy(original_measurement, database):
+        # ctx.log("DEBUG -> Explicit retention policy")
         return query
-    rp = rps_by_interval[interval]
+
+    rp = rp_for_interval(interval_magnitude, interval_unit, database)
+    if rp is None:
+        # ctx.log("DEBUG -> No configured retention policy for interval '{}{}'".format(interval_magnitude, interval_unit))
+        return query
+        
     if rp not in RPS_BY_DATABASE[database]:
-        LOGGER.debug("Unknown retention policy [%s] for database [%s]", rp, database)
+        ctx.log("ERROR -> Interval '{}{}' configured to match a retention policy '{}' which doesn't exist on database {}".format(interval_magnitude, interval_unit, rp, database))
         return query
 
-    if '.' in original_measurement:
-        parts = original_measurement.split('.')
-        if parts[0].strip('"') in RPS_BY_DATABASE[database]:
-            Logger.debug("Requested specific retention policy [%s]", parts[0].strip('"'))
-            return query
-        elif len(parts) > 1 and parts[1].strip('"') in RPS_BY_DATABASE[database]:
-            Logger.debug("Requested specific retention policy [%s]", parts[1].strip('"'))
-            return query
-        else:
-            # This is a just a dotted series name
-            pass
-    else:
-        # Nothing fancy here
-        pass
     new_measurement  = '"{}"."{}".{}'.format(database, rp, original_measurement)
     new_query = query.replace(original_measurement, new_measurement)
+    # ctx.log("DEBUG -> Rewrite to '{}'".format(new_query))
     return new_query
-    
-def update_rp_cache(database):
+
+def explicit_retention_policy(measurement, database):
+    if '.' in measurement:
+        parts = measurement.split('.')
+        if parts[0].strip('"') in RPS_BY_DATABASE[database]:
+            # first part of the measurement is an RP
+            return True
+        elif len(parts) > 1 and parts[1].strip('"') in RPS_BY_DATABASE[database]:
+            # second part of the measurement is an RP
+            return True
+        else:
+            # just a dotted series name
+            return False
+    else:
+            # just a series name
+            return False
+
+def rp_for_interval(interval_magnitude, interval_unit, database):
+    if database in CONFIG['rps_by_limit']:
+        rps_by_limit = CONFIG['rps_by_limit'][database]
+    else:
+        if '_default_' in CONFIG['rps_by_limit']:
+            rps_by_limit = CONFIG['rps_by_limit']['_default_']
+        else:
+            mitmproxy.ctx.log("WARN No _default_ interval to retention policy mapping was configured!")
+            return None
+    interval = parse_interval(interval_magnitude, interval_unit)
+    last_matching_rp = None
+    for limit, rp in rps_by_limit:
+        if interval >= limit:
+            last_matching_rp = rp
+        else:
+            if last_matching_rp: return last_matching_rp
+    return rps_by_limit[-1][-1]
+
+def parse_interval(magnitude, unit):
+    if unit == 's':
+        return float(magnitude)
+    elif unit == 'm':
+        return float(magnitude) * 60
+    elif unit == 'h':
+        return float(magnitude) * 3600
+    elif unit == 'd':
+        return float(magnitude) * 86400
+    elif unit == 'w':
+        return float(magnitude) * 604800
+    elif unit == 'y':
+        return float(magnitude) * 31536000
+    else:
+        # FIXME shouldn't ever get here?
+        return float(magnitude)
+        
+def update_rp_cache(ctx, database):
     params = {
-        'q'  : 'SHOW RETENTION POLICIES ON %s' % database,
+        'q'  : 'SHOW RETENTION POLICIES ON {}'.format(database),
         'db' : database
     }
-    r = requests.get(CONFIG['influxdb_url'] + '/query', params=params)
+    ctx.log("INFO Requesting retention policies for InfluxDB database {}".format(database))
     try:
-        RPS_BY_DATABASE[database] = { rp[0] for rp in r.json()['results'][0]['series'][0]['values'] }
+        r = requests.get(CONFIG['influxdb_url'] + '/query', params=params)
+        try:
+            RPS_BY_DATABASE[database] = { rp[0] for rp in r.json()['results'][0]['series'][0]['values'] }
+        except Exception as pe:
+            ctx.log("ERROR Could not parse InfluxDB database '{}' retention policies response ({}): '{}'".format(database, type(pe).__name__, pe.message))
     except Exception as e:
-        LOGGER.exception("Error (%s) fetching retention policies on database [%s] from InfluxDB: %s", type(e).__class__, database, e.message, exc_info=True)
-        pass
+        ctx.log("ERROR Could not make InfluxDB database '{}' retention policies request ({}): '{}'".format(database, type(e).__name__, e.message))
+
+def start(ctx, args):
+    ctx.log("INFO InfluxDB Grafana retention policy proxy booting (via mitmproxy)")
+
+def request(ctx, flow):
+    params = flow.request.query
+    if 'q' in params and 'db' in params:
+        new_queries = modify_queries(ctx, params['q'], params['db'])
+        params['q'] = new_queries
+        flow.request.query = params
         
 if __name__ == '__main__':
     if len(sys.argv) > 1:
         load_config(sys.argv[1])
-    LOGGER = build_logger()
-    LOGGER.info("Starting proxy server on %s:%s", CONFIG['bind']['address'], CONFIG['bind']['port'])
-    run(host=CONFIG['bind']['address'], port=CONFIG['bind']['port'], server='gevent')
