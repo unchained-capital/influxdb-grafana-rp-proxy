@@ -1,4 +1,3 @@
-import sys
 import yaml
 import regex
 
@@ -150,6 +149,8 @@ def update_rp_cache(ctx, database):
         return False
 
 def start(ctx, args):
+    if len(args) > 1:
+        load_config(args[1])
     ctx.log("INFO InfluxDB Grafana retention policy proxy booting (via mitmproxy).  Relaying requests to {}.".format(CONFIG['influxdb_url']))
 
 def request(ctx, flow):
@@ -158,7 +159,3 @@ def request(ctx, flow):
         new_queries = modify_queries(ctx, params['q'], params['db'])
         params['q'] = new_queries
         flow.request.query = params
-        
-if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        load_config(sys.argv[1])
