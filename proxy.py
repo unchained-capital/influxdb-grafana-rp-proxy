@@ -48,7 +48,8 @@ def modify_queries(ctx, queries, databases):
     try:
         database = databases[0]
         if database not in RPS_BY_DATABASE:
-            update_rp_cache(ctx, database)
+            if not update_rp_cache(ctx, database):
+                return queries
         return [modify_query(ctx, query, database) for query in queries]
     except Exception as e:
         ctx.log("ERROR Could not modify queries ({}): {}".format(type(e).__name__, e.message))
@@ -135,18 +136,21 @@ def update_rp_cache(ctx, database):
         'q'  : 'SHOW RETENTION POLICIES ON {}'.format(database),
         'db' : database
     }
-    ctx.log("INFO Requesting retention policies for InfluxDB database {}".format(database))
+    ctx.log("INFO Requesting retention policies for InfluxDB database {} at {}".format(database, CONFIG['influxdb_url']))
     try:
         r = requests.get(CONFIG['influxdb_url'] + '/query', params=params)
         try:
             RPS_BY_DATABASE[database] = { rp[0] for rp in r.json()['results'][0]['series'][0]['values'] }
+            return True
         except Exception as pe:
             ctx.log("ERROR Could not parse InfluxDB database '{}' retention policies response ({}): '{}'".format(database, type(pe).__name__, pe.message))
+            return False
     except Exception as e:
         ctx.log("ERROR Could not make InfluxDB database '{}' retention policies request ({}): '{}'".format(database, type(e).__name__, e.message))
+        return False
 
 def start(ctx, args):
-    ctx.log("INFO InfluxDB Grafana retention policy proxy booting (via mitmproxy)")
+    ctx.log("INFO InfluxDB Grafana retention policy proxy booting (via mitmproxy).  Relaying requests to {}.".format(CONFIG['influxdb_url']))
 
 def request(ctx, flow):
     params = flow.request.query
