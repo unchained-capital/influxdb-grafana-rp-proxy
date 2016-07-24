@@ -151,7 +151,7 @@ def update_rp_cache(ctx, database):
 def start(ctx, args):
     if len(args) > 1:
         load_config(args[1])
-    ctx.log("INFO InfluxDB Grafana retention policy proxy booting (via mitmproxy).  Relaying requests to {}.".format(CONFIG['influxdb_url']))
+    ctx.log("INFO InfluxDB Grafana retention policy proxy booting (via mitm).  Relaying requests to {}.".format(CONFIG['influxdb_url']))
 
 def request(ctx, flow):
     params = flow.request.query
