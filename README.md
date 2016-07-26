@@ -60,24 +60,34 @@ example).
 ## Database Preparation
 
 The following is just an example, written to match the
-[default configuration](default.yml).
+[default configuration](default.yml).  It works well with data being
+sourced from collection systems at a raw frequency of 5-10 seconds and
+being viewed from Grafana.
 
-1) Create Retention Policy for every database.
+1) Create database with retention policies:
+
 ```
-ALTER RETENTION POLICY "default" ON "graphite" DURATION 1h REPLICATION 1 DEFAULT
-CREATE RETENTION POLICY "one_week"  ON graphite DURATION 7d  REPLICATION 1
-CREATE RETENTION POLICY "one_month" ON graphite DURATION 30d REPLICATION 1
-CREATE RETENTION POLICY "forever"   ON graphite DURATION INF REPLICATION 1
+CREATE DATABASE IF NOT EXISTS operations WITH DURATION 24h REPLICATION 1 NAME for_1d_raw
+CREATE RETENTION POLICY for_7d_at_1m ON operations DURATION 7d REPLICATION 1
+CREATE RETENTION POLICY for_90d_at_10m ON operations DURATION 90d REPLICATION 1
+CREATE RETENTION POLICY forever_at_1h ON operations DURATION INF REPLICATION 1
 ```
+
 2) Create Continuous Queries
+
 ```
-CREATE CONTINUOUS QUERY graphite_default_to_one_week   ON graphite BEGIN SELECT mean(value) as value INTO graphite."one_week".:MEASUREMENT  FROM graphite."default"./.*/   GROUP BY time(10m), * END
-CREATE CONTINUOUS QUERY graphite_one_week_to_one_month ON graphite BEGIN SELECT mean(value) as value INTO graphite."one_month".:MEASUREMENT FROM graphite."one_week"./.*/  GROUP BY time(1h),  * END
-CREATE CONTINUOUS QUERY graphite_one_month_to_forever  ON graphite BEGIN SELECT mean(value) as value INTO graphite."forever".:MEASUREMENT   FROM graphite."one_month"./.*/ GROUP BY time(6h),  * END
+CREATE CONTINUOUS QUERY "for_1d_raw->for_7d_at_1m" ON operations RESAMPLE EVERY 30s BEGIN SELECT mean(value) AS value INTO operations."for_7d_at_1m".:MEASUREMENT FROM operations."for_1d_raw"./.*/ GROUP BY time(1m), * END
+CREATE CONTINUOUS QUERY "for_7d_at_1m->for_90d_at_10m" ON operations RESAMPLE EVERY 5m BEGIN SELECT mean(value) AS value INTO operations."for_90d_at_10m".:MEASUREMENT FROM operations."for_7d_at_1m"./.*/ GROUP BY time(10m), * END
+CREATE CONTINUOUS QUERY "for_90d_at_10m->forever_at_1h" ON operations RESAMPLE EVERY 30m BEGIN SELECT mean(value) AS value INTO operations."forever_at_1h".:MEASUREMENT FROM operations."for_90d_at_10m"./.*/ GROUP BY time(1h), * END
 ```
-3) Backfill historical data XX days.(only if needed)
+
+The `, *` and the end of the `GROUP BY` clause ensures that InfluxDB
+uses the full series name (including tags) for grouping.
+
+3) Backfill historical data 90 days (only if needed).
+
 ```
-SELECT mean(value) as value INTO graphite."one_week".:MEASUREMENT  FROM graphite."default"./.*/  WHERE time > now() - ? GROUP BY time(10m)*
-SELECT mean(value) as value INTO graphite."one_month".:MEASUREMENT FROM graphite."one_week"./.*/ WHERE time > now() - ? GROUP BY time(1h)*
-SELECT mean(value) as value INTO graphite."forever".:MEASUREMENT FROM graphite."one_month"./.*/ WHERE time > now() - ? GROUP BY time(6h)*
+SELECT mean(value) as value INTO operations."for_7d_at_1m".:MEASUREMENT  FROM operations."for_1d_raw"./.*/  WHERE time > now() - 90d GROUP BY time(1m), *
+SELECT mean(value) as value INTO operations."for_90d_at_10m".:MEASUREMENT FROM operations."for_7d_at_1m"./.*/ WHERE time > now() - 90d GROUP BY time(10m), *
+SELECT mean(value) as value INTO operations."forever_at_1h".:MEASUREMENT FROM operations."for_90d_at_10m"./.*/ WHERE time > now() - 90d GROUP BY time(1h), *
 ```

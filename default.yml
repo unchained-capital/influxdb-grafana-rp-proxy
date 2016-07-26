@@ -27,9 +27,9 @@ rps_by_limit:
   _default_:
     - [0, "default"]
   # Example below is more complete:
-  # my_database:
-  #   - [0,     "default"]
-  #   - [60,    "1min"]
-  #   - [1800,  "5min"]
-  #   - [10800, "1hour"]
-  #   - [86400, "1day"]
+  # 
+  # operations:
+  #   - [0,    "for_1d_raw"]
+  #   - [60,   "for_7d_at_1m"]
+  #   - [600,  "for_90d_at_10m"]
+  #   - [3600, "forever_at_1h"]
