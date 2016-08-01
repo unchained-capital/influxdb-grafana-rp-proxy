@@ -1,4 +1,4 @@
 #!/bin/bash
 
 # Spawns a mitmdump process with options set to development defaults.
-exec mitmdump --verbose --reverse "http://localhost:8086" --port "3004" --noapp --no-http2 --script 'proxy.py default.yml' "$@"
+exec mitmdump --reverse "http://localhost:8086" --port "3004" --noapp --no-http2 --script 'proxy.py default.yml' "$@"

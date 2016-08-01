@@ -1,5 +1,8 @@
 ---
 
+# Produce debugging output during run.
+debug: true
+
 # The mitmdump program handles most backend requests to InfluxDB but
 # our proxy code needs to make requests directly so it can cache the
 # set of retention polices for each database.
@@ -9,27 +12,53 @@
 # within the proxy script...
 influxdb_url: "http://localhost:8086"
 
-# Per-database configurations mapping the 'GROUP BY $interval'
-# requested by Grafana to an appropriate InfluxDB retention policy.
+# Per-database configurations configuration logic for query
+# re-writing.
 #
-# Top level entries are InfluxDB database names with corresponding
-# mappings.  The _default_ entry will be used for queries with a
-# database not explicitly named.
+# The top-level entry is a map from InfluxDB database names to
+# corresponding proxy handling logic.  If no database is specified in
+# a query, the '_default_' handling will be used.
 #
-# Second-level entries are a list of 2-element lists.  These sublists
-# define the a bound and the name of an InfluxDB retention policy.  If
-# the 'GROUP BY $interval' requested is larger than the bound, the
-# corresponding InfluxDB retention policy will be used.  To ensure the
-# smallest such bound is selected, order the list by bound, as in the
-# second example below.
-rps_by_limit:
+# The proxy handling logic for each database name is an array of maps
+# specifying conditions to select particular retention policies within
+# that database.  Each map should contain the following keys:
+#
+#   * name -- the name of the retention policy to use.
+#   
+#   * interval -- the smallest GROUP BY interval (in seconds) for
+#                 which this retention policy should be selected.
+#
+#   * retention -- the retention period (in seconds) for this
+#                  retention policy.
+#    
+# If the 'GROUP BY $interval' requested is larger than the 'interval'
+# and the query's lookback period is within the 'retention' period,
+# the corresponding InfluxDB retention policy 'name' will be used.
+#
+# To ensure the best retention policy is selected, order the list by
+# 'interval', as in the second example below.
+#
+# To specify an infinite retention period (INF in InfluxDB), use the
+# string 'inf', as below.
+retention_policies:
   # Example below should remain as the default.
   _default_:
-    - [0, "default"]
-  # Example below is more complete:
-  # 
-  # operations:
-  #   - [0,    "for_1d_raw"]
-  #   - [60,   "for_7d_at_1m"]
-  #   - [600,  "for_90d_at_10m"]
-  #   - [3600, "forever_at_1h"]
+    - name:      "default"
+      interval:  0
+      retention: "inf"
+  # Example below is more complete and serves as a good default for
+  # Grafana.
+  #
+  operations:
+    - name:     "for_1d_raw"
+      interval: 0
+      retention: 3600
+    - name:     "for_7d_at_1m"
+      interval: 60
+      retention: 604800          # 7d
+    - name:     "for_90d_at_10m"
+      interval: 600
+      retention: 7776000         # 90d
+    - name:     "forever_at_1h"
+      interval: 3600
+      retention: 'inf'
